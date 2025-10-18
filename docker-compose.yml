@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # SQL Server Database
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: productinventory-db
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=YourStrong@Passw0rd
+      - MSSQL_PID=Express
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - productinventory-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P YourStrong@Passw0rd -Q 'SELECT 1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Product Inventory API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: productinventory-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:80
+      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=ProductInventoryDB;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=true;MultipleActiveResultSets=true
+      - JwtSettings__SecretKey=YourProductionSecretKeyThatShouldBeAtLeast256BitsLongForHS256Algorithm
+      - JwtSettings__Issuer=ProductInventoryAPI
+      - JwtSettings__Audience=ProductInventoryAPI.Users
+    ports:
+      - "8080:80"
+    volumes:
+      - ./logs:/app/logs
+      - ./deployment/appsettings.Production.json:/app/appsettings.Production.json
+    networks:
+      - productinventory-network
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Redis Cache (Optional)
+  redis:
+    image: redis:7-alpine
+    container_name: productinventory-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - productinventory-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: productinventory-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - productinventory-network
+    depends_on:
+      - api
+    restart: unless-stopped
+
+networks:
+  productinventory-network:
+    driver: bridge
+
+volumes:
+  sqlserver_data:
+    driver: local
+  redis_data:
+    driver: local
